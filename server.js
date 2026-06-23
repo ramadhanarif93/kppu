@@ -2,7 +2,8 @@ const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 const path = require('path');
-const Database = require('better-sqlite3');
+const fs = require('fs');
+const initSqlJs = require('sql.js');
 
 const app = express();
 const server = http.createServer(app);
@@ -11,89 +12,106 @@ const io = new Server(server);
 app.use(express.static(path.join(__dirname, 'public')));
 
 // ── Database ──────────────────────────────────────────────────────────────────
-const db = new Database(path.join(__dirname, 'game.db'));
-db.pragma('journal_mode = WAL');
-db.pragma('foreign_keys = ON');
+const DB_PATH = path.join(__dirname, 'game.db');
+let db;
 
-db.exec(`
-  CREATE TABLE IF NOT EXISTS rooms (
-    code        TEXT    NOT NULL PRIMARY KEY,
-    host_name   TEXT    NOT NULL,
-    phase       TEXT    NOT NULL DEFAULT 'lobby',
-    round       INTEGER NOT NULL DEFAULT 0,
-    state_json  TEXT    NOT NULL DEFAULT '{}',
-    created_at  INTEGER NOT NULL DEFAULT (unixepoch())
-  );
-  CREATE TABLE IF NOT EXISTS room_players (
-    room_code   TEXT    NOT NULL REFERENCES rooms(code) ON DELETE CASCADE,
-    player_id   TEXT    NOT NULL,
-    name        TEXT    NOT NULL,
-    money       INTEGER NOT NULL DEFAULT 0,
-    joined_at   INTEGER NOT NULL DEFAULT (unixepoch()),
-    PRIMARY KEY (room_code, player_id)
-  );
-  CREATE TABLE IF NOT EXISTS round_log (
-    id          INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
-    room_code   TEXT    NOT NULL,
-    round       INTEGER NOT NULL,
-    player_id   TEXT    NOT NULL,
-    player_name TEXT    NOT NULL,
-    produced    INTEGER NOT NULL DEFAULT 0,
-    offer       INTEGER NOT NULL DEFAULT 0,
-    sold        INTEGER NOT NULL DEFAULT 0,
-    profit      INTEGER NOT NULL DEFAULT 0,
-    logged_at   INTEGER NOT NULL DEFAULT (unixepoch())
-  );
-`);
-console.log('Database ready (SQLite)');
+function saveDb() {
+  const data = db.export();
+  fs.writeFileSync(DB_PATH, Buffer.from(data));
+}
 
-const stmts = {
-  upsertRoom: db.prepare(`
-    INSERT INTO rooms (code, host_name, phase, round, state_json)
-    VALUES (@code, @host_name, @phase, @round, @state_json)
-    ON CONFLICT(code) DO UPDATE SET
-      host_name  = excluded.host_name,
-      phase      = excluded.phase,
-      round      = excluded.round,
-      state_json = excluded.state_json
-  `),
-  upsertPlayer: db.prepare(`
-    INSERT INTO room_players (room_code, player_id, name, money)
-    VALUES (@room_code, @player_id, @name, @money)
-    ON CONFLICT(room_code, player_id) DO UPDATE SET name = excluded.name, money = excluded.money
-  `),
-  removePlayer: db.prepare('DELETE FROM room_players WHERE room_code = ? AND player_id = ?'),
-  deleteRoom:   db.prepare('DELETE FROM rooms WHERE code = ?'),
-  listRooms:    db.prepare('SELECT code, host_name, phase FROM rooms ORDER BY created_at DESC LIMIT 50'),
-  logRound:     db.prepare(`
-    INSERT INTO round_log (room_code, round, player_id, player_name, produced, offer, sold, profit)
-    VALUES (@roomCode, @round, @playerId, @playerName, @produced, @offer, @sold, @profit)
-  `),
-};
+function initDb() {
+  return initSqlJs().then(SQL => {
+    if (fs.existsSync(DB_PATH)) {
+      const data = fs.readFileSync(DB_PATH);
+      db = new SQL.Database(data);
+    } else {
+      db = new SQL.Database();
+    }
+
+    db.run(`
+      CREATE TABLE IF NOT EXISTS rooms (
+        code        TEXT    NOT NULL PRIMARY KEY,
+        host_name   TEXT    NOT NULL,
+        phase       TEXT    NOT NULL DEFAULT 'lobby',
+        round       INTEGER NOT NULL DEFAULT 0,
+        state_json  TEXT    NOT NULL DEFAULT '{}',
+        created_at  INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+      );
+      CREATE TABLE IF NOT EXISTS room_players (
+        room_code   TEXT    NOT NULL,
+        player_id   TEXT    NOT NULL,
+        name        TEXT    NOT NULL,
+        money       INTEGER NOT NULL DEFAULT 0,
+        joined_at   INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+        PRIMARY KEY (room_code, player_id)
+      );
+      CREATE TABLE IF NOT EXISTS round_log (
+        id          INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+        room_code   TEXT    NOT NULL,
+        round       INTEGER NOT NULL,
+        player_id   TEXT    NOT NULL,
+        player_name TEXT    NOT NULL,
+        produced    INTEGER NOT NULL DEFAULT 0,
+        offer       INTEGER NOT NULL DEFAULT 0,
+        sold        INTEGER NOT NULL DEFAULT 0,
+        profit      INTEGER NOT NULL DEFAULT 0,
+        logged_at   INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+      );
+    `);
+    saveDb();
+    console.log('Database ready (sql.js)');
+  });
+}
 
 // ── DB helpers ────────────────────────────────────────────────────────────────
 function persistRoom(room) {
   const stateJson = JSON.stringify(roomToJson(room));
-  stmts.upsertRoom.run({ code: room.code, host_name: room.hostName, phase: room.phase, round: room.round, state_json: stateJson });
+  db.run(
+    `INSERT INTO rooms (code, host_name, phase, round, state_json)
+     VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(code) DO UPDATE SET
+       host_name=excluded.host_name, phase=excluded.phase,
+       round=excluded.round, state_json=excluded.state_json`,
+    [room.code, room.hostName, room.phase, room.round, stateJson]
+  );
   for (const [id, p] of Object.entries(room.players)) {
-    stmts.upsertPlayer.run({ room_code: room.code, player_id: id, name: p.name, money: p.money });
+    db.run(
+      `INSERT INTO room_players (room_code, player_id, name, money)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(room_code, player_id) DO UPDATE SET name=excluded.name, money=excluded.money`,
+      [room.code, id, p.name, p.money]
+    );
   }
+  saveDb();
 }
 
 function dbRemovePlayer(roomCode, playerId) {
-  stmts.removePlayer.run(roomCode, playerId);
+  db.run('DELETE FROM room_players WHERE room_code = ? AND player_id = ?', [roomCode, playerId]);
+  saveDb();
 }
 
 function dbDeleteRoom(code) {
-  stmts.deleteRoom.run(code);
+  db.run('DELETE FROM rooms WHERE code = ?', [code]);
+  db.run('DELETE FROM room_players WHERE room_code = ?', [code]);
+  saveDb();
 }
 
 function dbListRooms() {
-  return stmts.listRooms.all();
+  const stmt = db.prepare('SELECT code, host_name, phase FROM rooms ORDER BY created_at DESC LIMIT 50');
+  const rows = [];
+  while (stmt.step()) rows.push(stmt.getAsObject());
+  stmt.free();
+  return rows;
 }
 
 function dbLogRound({ roomCode, round, playerId, playerName, produced, offer, sold, profit }) {
-  stmts.logRound.run({ roomCode, round, playerId, playerName, produced, offer, sold, profit });
+  db.run(
+    `INSERT INTO round_log (room_code, round, player_id, player_name, produced, offer, sold, profit)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    [roomCode, round, playerId, playerName, produced, offer, sold, profit]
+  );
+  saveDb();
 }
 
 // ── Game constants ────────────────────────────────────────────────────────────
@@ -957,4 +975,6 @@ function handleLeave(socket) {
 
 // ── Start ─────────────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => console.log(`Server on http://localhost:${PORT}`));
+initDb()
+  .then(() => server.listen(PORT, () => console.log(`Server on http://localhost:${PORT}`)))
+  .catch(err => { console.error('Failed to init DB:', err); process.exit(1); });
