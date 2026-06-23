@@ -39,6 +39,8 @@ socket.on('state', (s) => {
   gameState = s;
   const phase = s.phase;
 
+  if (phase !== 'action_cards') hideCardSpinner();
+
   if (phase === 'lobby')          { renderLobby(s);         showScreen('lobby'); }
   else if (phase === 'production') { renderProduction(s);    showScreen('production'); }
   else if (phase === 'demand_reveal') { renderDemandReveal(s); showScreen('demand_reveal'); }
@@ -111,6 +113,28 @@ function leaveRoom() {
 }
 document.getElementById('btn-leave').addEventListener('click', leaveRoom);
 document.getElementById('btn-go-home').addEventListener('click', leaveRoom);
+
+// ── Stop game ─────────────────────────────────────────────────────────────────
+function updateStopButtons(s) {
+  const isHost = s.players[myId]?.name === s.hostName;
+  ['btn-stop-prod', 'btn-stop-ac', 'btn-stop-off'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.classList.toggle('hidden', !isHost);
+  });
+}
+
+['btn-stop-prod', 'btn-stop-ac', 'btn-stop-off'].forEach(id => {
+  document.getElementById(id)?.addEventListener('click', () => {
+    document.getElementById('stop-modal').classList.remove('hidden');
+  });
+});
+document.getElementById('btn-stop-cancel').addEventListener('click', () => {
+  document.getElementById('stop-modal').classList.add('hidden');
+});
+document.getElementById('btn-stop-confirm').addEventListener('click', () => {
+  document.getElementById('stop-modal').classList.add('hidden');
+  socket.emit('stop_game');
+});
 
 // ── Lobby ─────────────────────────────────────────────────────────────────────
 function renderLobby(s) {
@@ -220,6 +244,7 @@ function renderHand(containerId, hand, isKppuContext = false, disabled = false) 
 let lockedProd = false;
 
 function renderProduction(s) {
+  updateStopButtons(s);
   const me = s.players[myId];
   if (!me) return;
   const cost = me.productionCostOverride ?? s.productionCost;
@@ -320,6 +345,8 @@ document.querySelectorAll('.btn-num').forEach(btn => {
 
 // ── Action Cards ──────────────────────────────────────────────────────────────
 function renderActionCards(s) {
+  hideCardSpinner();
+  updateStopButtons(s);
   const me = s.players[myId];
   const round = s.rounds[s.round];
   document.getElementById('ac-round-label').textContent = `Ronde ${s.round + 1} / ${s.rounds.length}`;
@@ -437,24 +464,35 @@ function updateActionCardUI() {
   playBtn.disabled = card.needsTarget && !selectedTargetId;
 }
 
+// ── Card spinner ─────────────────────────────────────────────────────────────
+function showCardSpinner() {
+  document.getElementById('card-spinner').classList.remove('hidden');
+}
+function hideCardSpinner() {
+  document.getElementById('card-spinner').classList.add('hidden');
+}
+
 document.getElementById('btn-play-card').addEventListener('click', () => {
   if (selectedCardId === null) return;
   const maxProd = parseInt(document.getElementById('ac-maxprod-input')?.value) || 5;
   socket.emit('play_card', { cardId: selectedCardId, targetId: selectedTargetId, maxProd });
   selectedCardId = null;
   selectedTargetId = null;
+  showCardSpinner();
 });
 
 document.getElementById('btn-pass-card').addEventListener('click', () => {
   selectedCardId = null;
   selectedTargetId = null;
   socket.emit('pass_card');
+  showCardSpinner();
 });
 
 // ── Offering ──────────────────────────────────────────────────────────────────
 let lockedOffer = false;
 
 function renderOffering(s) {
+  updateStopButtons(s);
   const me = s.players[myId];
   const round = s.rounds[s.round];
   document.getElementById('off-round-label').textContent = `Ronde ${s.round + 1} / ${s.rounds.length}`;
@@ -533,26 +571,37 @@ function renderResults(s) {
   document.getElementById('results-title').textContent =
     `Hasil Ronde ${s.round + 1} — Permintaan: ${round.demand} unit`;
 
-  const players = Object.entries(s.players).sort(([, a], [, b]) => b.soldUnits - a.soldUnits || (a.offer || 0) - (b.offer || 0));
+  // Sort in sell order: lowest offer first, tie → more units first (mirrors server resolveSelling)
+  const players = Object.entries(s.players).sort(([, a], [, b]) => {
+    if (a.bankrupt !== b.bankrupt) return a.bankrupt ? 1 : -1;
+    if ((a.offer || 0) !== (b.offer || 0)) return (a.offer || 0) - (b.offer || 0);
+    const unitsA = (a.produced || 0) + (a.carryover || 0);
+    const unitsB = (b.produced || 0) + (b.carryover || 0);
+    if (unitsA !== unitsB) return unitsB - unitsA;
+    return (b.money || 0) - (a.money || 0);
+  });
   const productionCost = s.productionCost;
 
   document.getElementById('results-table').innerHTML = `<table>
-    <thead><tr><th>Pemain</th><th>Penawaran/unit</th><th>Diproduksi</th><th>Terjual</th><th>Profit</th></tr></thead>
-    <tbody>${players.map(([id, p]) => {
+    <thead><tr><th>#</th><th>Pemain</th><th>Penawaran/unit</th><th>Produksi</th><th>Terjual</th><th>Profit</th></tr></thead>
+    <tbody>${players.map(([id, p], i) => {
       const sold = p.soldUnits || 0;
       const produced = p.produced || 0;
       const offer = p.offer || 0;
       const effectiveCost = p.productionCostOverride ?? productionCost;
       const profit = sold * (offer + (p.revenueBonusPerUnit || 0)) - produced * effectiveCost;
       const isMe = id === myId;
+      const rank = p.bankrupt ? '—' : (i + 1);
       return `<tr class="${sold > 0 ? 'win-row' : ''}${p.bankrupt ? ' bankrupt' : ''}">
+        <td class="sell-rank">${rank}</td>
         <td>${esc(p.name)}${isMe ? ' <span style="color:var(--accent)">(kamu)</span>' : ''}${p.bankrupt ? ' <span style="color:var(--danger)">(Bangkrut)</span>' : ''}</td>
         <td>${offer ? fmt(offer) : (p.boikoted ? 'Diboikot' : '-')}</td>
         <td>${produced}</td>
         <td>${sold}</td>
         <td class="${profit >= 0 ? 'profit-pos' : 'profit-neg'}">${fmt(profit)}</td>
       </tr>`;
-    }).join('')}</tbody></table>`;
+    }).join('')}</tbody></table>
+    <p class="tiebreak-rule">Urutan jual: harga terendah → jika sama, produksi terbanyak → jika sama, saldo terbanyak.</p>`;
 
   renderScoreboard('scoreboard', s.players);
 

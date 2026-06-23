@@ -873,6 +873,33 @@ io.on('connection', (socket) => {
     broadcastRoom(room);
   });
 
+  // ── Stop game (host only) ──
+  socket.on('stop_game', () => {
+    const sr = socketRoom[socket.id]; if (!sr) return;
+    const room = rooms[sr.roomCode];
+    if (!room) return;
+    if (sr.name !== room.hostName) { socket.emit('error', 'Hanya host yang bisa menghentikan game'); return; }
+    if (room.phase === 'lobby' || room.phase === 'gameover') return;
+    room.phase = 'lobby';
+    room.round = 0;
+    room.rounds = [];
+    room.deck = [];
+    room.turnOrder = [];
+    room.actionTurnIndex = 0;
+    room.activeViolation = null;
+    room.kppuWindow = false;
+    room.pendingCard = null;
+    for (const p of Object.values(room.players)) {
+      p.money = 0;
+      p.hand = [];
+      p.bankrupt = false;
+      p.carryover = 0;
+      resetRoundPerPlayer(p);
+    }
+    persistRoom(room);
+    broadcastRoom(room);
+  });
+
   // ── Restart ──
   socket.on('restart', () => {
     const sr = socketRoom[socket.id]; if (!sr) return;

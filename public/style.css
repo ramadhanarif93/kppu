@@ -186,3 +186,28 @@ tr:last-child td { border-bottom: none; }
 .toast { position: fixed; bottom: 22px; left: 50%; transform: translateX(-50%); background: var(--danger); color: #fff; padding: 11px 22px; border-radius: 8px; font-size: 0.92rem; z-index: 999; animation: fadeIn 0.2s; white-space: nowrap; }
 .toast.success { background: var(--success); }
 @keyframes fadeIn { from { opacity: 0; transform: translateX(-50%) translateY(8px); } to { opacity: 1; transform: translateX(-50%) translateY(0); } }
+
+/* ── Tie-break rule hint ── */
+.tiebreak-rule { font-size: 0.78rem; color: var(--muted); margin-top: 8px; padding: 7px 10px; background: var(--surface2); border-radius: 7px; line-height: 1.5; }
+.tiebreak-rule strong { color: var(--text); }
+.sell-rank { color: var(--muted); font-size: 0.8rem; font-weight: 700; width: 24px; }
+
+/* ── Stop game button ── */
+.btn-stop-game { margin-left: auto; background: transparent; color: var(--danger); border: 1px solid rgba(239,68,68,0.45); border-radius: 8px; padding: 5px 14px; font-size: 0.8rem; font-weight: 600; cursor: pointer; transition: background 0.15s, border-color 0.15s; }
+.btn-stop-game:hover { background: rgba(239,68,68,0.12); border-color: var(--danger); }
+
+/* ── Modal ── */
+.modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.65); z-index: 900; display: flex; align-items: center; justify-content: center; }
+.modal-box { background: var(--surface); border-radius: var(--radius); padding: 28px 32px; max-width: 380px; width: 90%; text-align: center; }
+.modal-box h3 { font-size: 1.15rem; margin-bottom: 10px; }
+.modal-box p { color: var(--muted); font-size: 0.88rem; line-height: 1.5; margin-bottom: 20px; }
+.modal-actions { display: flex; gap: 10px; justify-content: center; }
+.btn-danger { background: var(--danger); color: #fff; border: none; border-radius: 8px; padding: 10px 22px; font-size: 0.95rem; font-weight: 600; cursor: pointer; transition: opacity 0.15s; }
+.btn-danger:hover { opacity: 0.85; }
+
+/* ── Card spinner overlay ── */
+.spinner-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 800; display: flex; align-items: center; justify-content: center; }
+.spinner-box { background: var(--surface); border-radius: var(--radius); padding: 28px 36px; display: flex; flex-direction: column; align-items: center; gap: 14px; }
+.spinner-box p { color: var(--muted); font-size: 0.9rem; }
+.spinner { width: 36px; height: 36px; border: 3px solid var(--surface2); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.7s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }

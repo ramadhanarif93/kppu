@@ -57,6 +57,7 @@
       <div id="prod-round-label" class="round-label"></div>
       <div id="prod-room-code" class="room-chip"></div>
       <div id="prod-money-display" class="money-chip"></div>
+      <button id="btn-stop-prod" class="btn-stop-game hidden">Hentikan Game</button>
     </div>
     <div class="main-layout">
       <div class="card-panel">
@@ -117,6 +118,7 @@
       <div id="ac-round-label" class="round-label"></div>
       <div id="ac-room-code" class="room-chip"></div>
       <div id="ac-demand-badge" class="demand-badge"></div>
+      <button id="btn-stop-ac" class="btn-stop-game hidden">Hentikan Game</button>
     </div>
 
     <!-- KPPU interrupt banner -->
@@ -158,6 +160,7 @@
       <div id="off-round-label" class="round-label"></div>
       <div id="off-room-code" class="room-chip"></div>
       <div id="off-demand-badge" class="demand-badge"></div>
+      <button id="btn-stop-off" class="btn-stop-game hidden">Hentikan Game</button>
     </div>
     <div class="main-layout">
       <div class="card-panel">
@@ -171,6 +174,9 @@
           </div>
           <div id="off-others-prices" class="hidden info-box" style="margin-top:8px"></div>
           <div id="off-revenue-preview" class="cost-preview"></div>
+          <div class="tiebreak-rule">
+            Jika harga sama: prioritas ke pemain dengan <strong>jumlah produksi lebih banyak</strong> — mereka terlayani lebih dulu.
+          </div>
         </div>
         <button id="btn-ready-offer" class="btn-primary">Kunci Penawaran</button>
       </div>
@@ -201,6 +207,26 @@
         <button id="btn-restart" class="btn-primary">Main Lagi</button>
         <button id="btn-go-home" class="btn-secondary">Kembali ke Lobby</button>
       </div>
+    </div>
+  </div>
+
+  <!-- STOP GAME MODAL -->
+  <div id="stop-modal" class="modal-overlay hidden">
+    <div class="modal-box">
+      <h3>Hentikan Game?</h3>
+      <p>Semua pemain akan dikembalikan ke lobby. Game yang sedang berjalan akan dibatalkan.</p>
+      <div class="modal-actions">
+        <button id="btn-stop-confirm" class="btn-danger">Ya, Hentikan</button>
+        <button id="btn-stop-cancel" class="btn-secondary">Batal</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- CARD PLAY SPINNER -->
+  <div id="card-spinner" class="spinner-overlay hidden">
+    <div class="spinner-box">
+      <div class="spinner"></div>
+      <p>Memproses kartu…</p>
     </div>
   </div>
 
