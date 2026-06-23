@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>KPPU Card Game</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<div id="app">
+
+  <!-- HOME -->
+  <div id="screen-home" class="screen active">
+    <div class="card-panel center">
+      <h1>KPPU Card Game</h1>
+      <p class="subtitle">Persaingan pasar — produksi, strategi, menang!</p>
+      <div class="form-group">
+        <label>Nama kamu</label>
+        <input id="home-name" type="text" maxlength="20" placeholder="Masukkan nama" />
+      </div>
+      <div class="home-actions">
+        <button id="btn-create-room" class="btn-primary">Buat Room</button>
+        <div class="divider">atau</div>
+        <div class="join-row">
+          <input id="home-code" type="text" maxlength="6" placeholder="Kode room (mis. ABC123)" class="code-input" />
+          <button id="btn-join-room" class="btn-secondary">Gabung</button>
+        </div>
+      </div>
+      <div id="room-list-section">
+        <p class="hint" style="margin-bottom:8px">Room terbuka:</p>
+        <div id="room-list"></div>
+        <button id="btn-refresh-rooms" class="btn-ghost">Refresh</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- LOBBY -->
+  <div id="screen-lobby" class="screen">
+    <div class="card-panel center">
+      <div class="room-code-display">
+        <span class="room-label">Kode Room</span>
+        <span id="lobby-code" class="room-code-value"></span>
+        <button id="btn-copy-code" class="btn-ghost small">Salin</button>
+      </div>
+      <p class="subtitle" id="lobby-host-label"></p>
+      <h3 style="margin-bottom:8px;color:var(--muted)">Pemain di room</h3>
+      <div id="lobby-players" class="player-list"></div>
+      <button id="btn-start" class="btn-primary hidden">Mulai Game</button>
+      <p id="lobby-hint" class="hint"></p>
+      <button id="btn-leave" class="btn-ghost" style="margin-top:12px">Keluar Room</button>
+    </div>
+  </div>
+
+  <!-- PRODUCTION -->
+  <div id="screen-production" class="screen">
+    <div class="top-bar">
+      <div id="prod-round-label" class="round-label"></div>
+      <div id="prod-room-code" class="room-chip"></div>
+      <div id="prod-money-display" class="money-chip"></div>
+    </div>
+    <div class="main-layout">
+      <div class="card-panel">
+        <h2>Fase Produksi</h2>
+        <p>Biaya produksi: <strong id="prod-cost-label"></strong> / unit</p>
+        <div id="prod-bankrupt-warn" class="warn-box hidden">Saldo tidak cukup untuk produksi!</div>
+        <div class="form-group" style="margin-top:14px">
+          <label>Jumlah unit yang diproduksi</label>
+          <div class="number-row">
+            <button class="btn-num" data-delta="-5">-5</button>
+            <button class="btn-num" data-delta="-1">-1</button>
+            <input id="units-input" type="number" min="0" value="0" />
+            <button class="btn-num" data-delta="1">+1</button>
+            <button class="btn-num" data-delta="5">+5</button>
+          </div>
+        </div>
+        <div id="prod-cost-preview" class="cost-preview"></div>
+        <div id="prod-carryover-note" class="info-box hidden"></div>
+        <button id="btn-ready-prod" class="btn-primary">Kunci Produksi</button>
+      </div>
+      <div class="card-panel">
+        <h3>Pemain</h3>
+        <div id="prod-players" class="player-list"></div>
+        <div style="margin-top:16px">
+          <h3>Kartu aksi kamu</h3>
+          <div id="prod-hand" class="hand-display"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- DEMAND REVEAL -->
+  <div id="screen-demand_reveal" class="screen">
+    <div class="card-panel center">
+      <h2>Permintaan Pasar</h2>
+      <div id="demand-card-display" class="demand-card-big"></div>
+      <p id="demand-adjust-note" class="hint" style="margin:12px 0"></p>
+      <div id="demand-adjust-section" class="hidden">
+        <div class="form-group">
+          <label>Sesuaikan jumlah produksi (kartu Sesuaikan Produksi aktif)</label>
+          <div class="number-row">
+            <button class="btn-num" data-delta-adj="-5">-5</button>
+            <button class="btn-num" data-delta-adj="-1">-1</button>
+            <input id="adjust-units-input" type="number" min="0" value="0" />
+            <button class="btn-num" data-delta-adj="1">+1</button>
+            <button class="btn-num" data-delta-adj="5">+5</button>
+          </div>
+        </div>
+        <button id="btn-confirm-adjust" class="btn-secondary">Konfirmasi Penyesuaian</button>
+      </div>
+      <button id="btn-reveal-done" class="btn-primary" style="margin-top:16px">Lanjut ke Kartu Aksi →</button>
+    </div>
+  </div>
+
+  <!-- ACTION CARDS -->
+  <div id="screen-action_cards" class="screen">
+    <div class="top-bar">
+      <div id="ac-round-label" class="round-label"></div>
+      <div id="ac-room-code" class="room-chip"></div>
+      <div id="ac-demand-badge" class="demand-badge"></div>
+    </div>
+
+    <!-- KPPU interrupt banner -->
+    <div id="kppu-banner" class="kppu-banner hidden">
+      <strong>⚠ Kartu Pelanggaran Dimainkan!</strong>
+      <span id="kppu-banner-text"></span>
+      <div id="kppu-hand" class="hand-display inline-hand"></div>
+    </div>
+
+    <div class="main-layout">
+      <div class="card-panel">
+        <div id="ac-turn-indicator" class="turn-indicator"></div>
+        <h3 style="margin-bottom:12px">Kartu aksi kamu</h3>
+        <div id="ac-hand" class="hand-display"></div>
+        <div id="ac-target-picker" class="hidden" style="margin-top:12px">
+          <label class="form-label">Pilih target pemain:</label>
+          <div id="ac-target-list" class="target-list"></div>
+        </div>
+        <div id="ac-maxprod-picker" class="hidden" style="margin-top:12px">
+          <label class="form-label">Batas maksimal produksi:</label>
+          <input id="ac-maxprod-input" type="number" min="1" max="20" value="5" style="width:90px" />
+        </div>
+        <div style="display:flex;gap:10px;margin-top:14px;flex-wrap:wrap">
+          <button id="btn-play-card" class="btn-primary hidden">Mainkan Kartu</button>
+          <button id="btn-pass-card" class="btn-secondary">Lewati Giliran</button>
+        </div>
+      </div>
+      <div class="card-panel">
+        <h3>Status Pemain</h3>
+        <div id="ac-players" class="player-list"></div>
+        <div id="ac-violation-display" style="margin-top:12px"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- OFFERING -->
+  <div id="screen-offering" class="screen">
+    <div class="top-bar">
+      <div id="off-round-label" class="round-label"></div>
+      <div id="off-room-code" class="room-chip"></div>
+      <div id="off-demand-badge" class="demand-badge"></div>
+    </div>
+    <div class="main-layout">
+      <div class="card-panel">
+        <h2>Fase Penawaran</h2>
+        <div id="off-boikot-warn" class="warn-box hidden">Kamu diboikot — tidak bisa menjual ronde ini.</div>
+        <p id="off-produced-summary"></p>
+        <div id="off-price-section">
+          <div class="form-group" style="margin-top:12px">
+            <label>Harga per unit (penawaran kamu)</label>
+            <input id="offer-input" type="number" min="0" placeholder="mis. 70000" />
+          </div>
+          <div id="off-others-prices" class="hidden info-box" style="margin-top:8px"></div>
+          <div id="off-revenue-preview" class="cost-preview"></div>
+        </div>
+        <button id="btn-ready-offer" class="btn-primary">Kunci Penawaran</button>
+      </div>
+      <div class="card-panel">
+        <h3>Pemain</h3>
+        <div id="off-players" class="player-list"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- RESULTS -->
+  <div id="screen-results" class="screen">
+    <div class="card-panel center" style="max-width:720px">
+      <h2 id="results-title"></h2>
+      <div id="results-table"></div>
+      <div id="scoreboard"></div>
+      <div id="bankrupt-list" style="margin-bottom:12px"></div>
+      <button id="btn-next-round" class="btn-primary">Ronde Berikutnya →</button>
+    </div>
+  </div>
+
+  <!-- GAME OVER -->
+  <div id="screen-gameover" class="screen">
+    <div class="card-panel center">
+      <h2>🏆 Game Selesai</h2>
+      <div id="final-scoreboard"></div>
+      <div style="display:flex;gap:12px;justify-content:center;margin-top:8px">
+        <button id="btn-restart" class="btn-primary">Main Lagi</button>
+        <button id="btn-go-home" class="btn-secondary">Kembali ke Lobby</button>
+      </div>
+    </div>
+  </div>
+
+</div>
+<div id="toast" class="toast hidden"></div>
+<script src="/socket.io/socket.io.js"></script>
+<script src="game.js"></script>
+</body>
+</html>
