@@ -396,18 +396,19 @@ function resolveSelling(room) {
         playerName: p.name, produced: p.produced, offer: p.offer, sold, profit });
     }
 
-    // Players who didn't sell: pay production cost, handle unsold
+    // Players who didn't sell (non-boikoted): pay production cost, handle unsold
     for (const [id, p] of activePlayers(room)) {
-      if (p.soldUnits === 0 && (p.produced > 0 || p.carryover > 0)) {
-        if (!p.boikoted) {
-          const cost = p.produced * (p.productionCostOverride ?? PRODUCTION_COST);
-          room.players[id].money -= cost;
-        } else {
-          const cost = p.produced * (p.productionCostOverride ?? PRODUCTION_COST);
-          room.players[id].money -= cost;
-        }
+      if (p.soldUnits === 0 && (p.produced > 0 || p.carryover > 0) && !p.boikoted) {
+        const cost = p.produced * (p.productionCostOverride ?? PRODUCTION_COST);
+        room.players[id].money -= cost;
         room.players[id].carryover = p.unsoldProtected ? (p.produced + p.carryover) : 0;
       }
+    }
+    // Boikoted players: pay production cost, handle unsold
+    for (const [id, p] of activePlayers(room).filter(([, p]) => p.boikoted && p.produced > 0)) {
+      const cost = p.produced * (p.productionCostOverride ?? PRODUCTION_COST);
+      room.players[id].money -= cost;
+      room.players[id].carryover = p.unsoldProtected ? (p.produced + p.carryover) : 0;
     }
   }
 
@@ -521,14 +522,9 @@ function applyActionCard(room, playerId, card, targetId, maxProd) {
       break;
     }
     case 'batalkan_produksi': {
-      // Cancel production this round: refund cost
+      // Refund exactly what was paid at production time
       const refund = p.produced * (p.productionCostOverride ?? PRODUCTION_COST);
       p.money += refund;
-      // Also refund the override subsidy if any
-      if (p.productionCostOverride !== null) {
-        const subsidyAlreadyGained = p.produced * (PRODUCTION_COST - p.productionCostOverride);
-        p.money -= subsidyAlreadyGained;
-      }
       p.produced = 0;
       p.productionCostOverride = null;
       break;
@@ -583,13 +579,12 @@ function allPlayedOrPassed(room) {
 function advanceActionTurn(room) {
   const order = activeActionOrder(room);
   if (!order.length) return;
-  room.actionTurnIndex = (room.actionTurnIndex + 1) % order.length;
-  // Skip players who already played a card this round
+  const start = room.actionTurnIndex;
   let tries = 0;
-  while (tries < order.length && room.players[order[room.actionTurnIndex]]?.playedCard) {
+  do {
     room.actionTurnIndex = (room.actionTurnIndex + 1) % order.length;
     tries++;
-  }
+  } while (tries < order.length && room.players[order[room.actionTurnIndex]]?.playedCard);
 }
 
 function currentActionPlayerId(room) {
@@ -740,6 +735,11 @@ io.on('connection', (socket) => {
       setTimeout(() => {
         if (room.pendingCard && room.pendingCard.card.id === cardId) {
           const pendingPlayerId = room.pendingCard.playerId;
+          if (!room.players[pendingPlayerId]) {
+            room.kppuWindow = false;
+            room.pendingCard = null;
+            return;
+          }
           applyPendingCard(room);
           room.players[pendingPlayerId].playedCard = true;
           room.kppuWindow = false;

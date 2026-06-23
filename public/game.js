@@ -343,7 +343,7 @@ function renderActionCards(s) {
 
   // Turn indicator
   const turnEl = document.getElementById('ac-turn-indicator');
-  const order = s.turnOrder.filter(id => s.players[id] && !s.players[id].bankrupt && !s.players[id].playedCard);
+  const order = s.turnOrder.filter(id => s.players[id] && !s.players[id].bankrupt);
   const currentId = order.length ? order[s.actionTurnIndex % order.length] : null;
   const isMyTurn = currentId === myId;
   const alreadyPlayed = me?.playedCard || false;
@@ -542,7 +542,8 @@ function renderResults(s) {
       const sold = p.soldUnits || 0;
       const produced = p.produced || 0;
       const offer = p.offer || 0;
-      const profit = sold * offer - produced * productionCost;
+      const effectiveCost = p.productionCostOverride ?? productionCost;
+      const profit = sold * (offer + (p.revenueBonusPerUnit || 0)) - produced * effectiveCost;
       const isMe = id === myId;
       return `<tr class="${sold > 0 ? 'win-row' : ''}${p.bankrupt ? ' bankrupt' : ''}">
         <td>${esc(p.name)}${isMe ? ' <span style="color:var(--accent)">(kamu)</span>' : ''}${p.bankrupt ? ' <span style="color:var(--danger)">(Bangkrut)</span>' : ''}</td>
