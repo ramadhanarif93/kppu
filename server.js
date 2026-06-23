@@ -1,9 +1,8 @@
-require('dotenv').config();
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 const path = require('path');
-const mysql = require('mysql2/promise');
+const Database = require('better-sqlite3');
 
 const app = express();
 const server = http.createServer(app);
@@ -12,100 +11,89 @@ const io = new Server(server);
 app.use(express.static(path.join(__dirname, 'public')));
 
 // ── Database ──────────────────────────────────────────────────────────────────
-const pool = mysql.createPool({
-  host:     process.env.DB_HOST     || 'localhost',
-  port:     process.env.DB_PORT     || 3306,
-  user:     process.env.DB_USER     || 'root',
-  password: process.env.DB_PASSWORD || '',
-  database: process.env.DB_NAME     || 'kppu_game',
-  waitForConnections: true,
-  connectionLimit: 10,
-});
+const db = new Database(path.join(__dirname, 'game.db'));
+db.pragma('journal_mode = WAL');
+db.pragma('foreign_keys = ON');
 
-async function initDb() {
-  await pool.execute(`
-    CREATE TABLE IF NOT EXISTS rooms (
-      code        VARCHAR(6)   NOT NULL PRIMARY KEY,
-      host_name   VARCHAR(20)  NOT NULL,
-      phase       VARCHAR(30)  NOT NULL DEFAULT 'lobby',
-      round       TINYINT      NOT NULL DEFAULT 0,
-      state_json  MEDIUMTEXT   NOT NULL,
-      created_at  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      updated_at  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-    )
-  `);
-  await pool.execute(`
-    CREATE TABLE IF NOT EXISTS room_players (
-      room_code   VARCHAR(6)   NOT NULL,
-      player_id   VARCHAR(64)  NOT NULL,
-      name        VARCHAR(20)  NOT NULL,
-      money       INT          NOT NULL DEFAULT 0,
-      joined_at   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      PRIMARY KEY (room_code, player_id),
-      FOREIGN KEY (room_code) REFERENCES rooms(code) ON DELETE CASCADE
-    )
-  `);
-  await pool.execute(`
-    CREATE TABLE IF NOT EXISTS round_log (
-      id          INT UNSIGNED  NOT NULL AUTO_INCREMENT PRIMARY KEY,
-      room_code   VARCHAR(6)    NOT NULL,
-      round       TINYINT       NOT NULL,
-      player_id   VARCHAR(64)   NOT NULL,
-      player_name VARCHAR(20)   NOT NULL,
-      produced    INT           NOT NULL DEFAULT 0,
-      offer       INT           NOT NULL DEFAULT 0,
-      sold        INT           NOT NULL DEFAULT 0,
-      profit      INT           NOT NULL DEFAULT 0,
-      logged_at   DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP
-    )
-  `);
-  console.log('Database tables ready');
-}
+db.exec(`
+  CREATE TABLE IF NOT EXISTS rooms (
+    code        TEXT    NOT NULL PRIMARY KEY,
+    host_name   TEXT    NOT NULL,
+    phase       TEXT    NOT NULL DEFAULT 'lobby',
+    round       INTEGER NOT NULL DEFAULT 0,
+    state_json  TEXT    NOT NULL DEFAULT '{}',
+    created_at  INTEGER NOT NULL DEFAULT (unixepoch())
+  );
+  CREATE TABLE IF NOT EXISTS room_players (
+    room_code   TEXT    NOT NULL REFERENCES rooms(code) ON DELETE CASCADE,
+    player_id   TEXT    NOT NULL,
+    name        TEXT    NOT NULL,
+    money       INTEGER NOT NULL DEFAULT 0,
+    joined_at   INTEGER NOT NULL DEFAULT (unixepoch()),
+    PRIMARY KEY (room_code, player_id)
+  );
+  CREATE TABLE IF NOT EXISTS round_log (
+    id          INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+    room_code   TEXT    NOT NULL,
+    round       INTEGER NOT NULL,
+    player_id   TEXT    NOT NULL,
+    player_name TEXT    NOT NULL,
+    produced    INTEGER NOT NULL DEFAULT 0,
+    offer       INTEGER NOT NULL DEFAULT 0,
+    sold        INTEGER NOT NULL DEFAULT 0,
+    profit      INTEGER NOT NULL DEFAULT 0,
+    logged_at   INTEGER NOT NULL DEFAULT (unixepoch())
+  );
+`);
+console.log('Database ready (SQLite)');
+
+const stmts = {
+  upsertRoom: db.prepare(`
+    INSERT INTO rooms (code, host_name, phase, round, state_json)
+    VALUES (@code, @host_name, @phase, @round, @state_json)
+    ON CONFLICT(code) DO UPDATE SET
+      host_name  = excluded.host_name,
+      phase      = excluded.phase,
+      round      = excluded.round,
+      state_json = excluded.state_json
+  `),
+  upsertPlayer: db.prepare(`
+    INSERT INTO room_players (room_code, player_id, name, money)
+    VALUES (@room_code, @player_id, @name, @money)
+    ON CONFLICT(room_code, player_id) DO UPDATE SET name = excluded.name, money = excluded.money
+  `),
+  removePlayer: db.prepare('DELETE FROM room_players WHERE room_code = ? AND player_id = ?'),
+  deleteRoom:   db.prepare('DELETE FROM rooms WHERE code = ?'),
+  listRooms:    db.prepare('SELECT code, host_name, phase FROM rooms ORDER BY created_at DESC LIMIT 50'),
+  logRound:     db.prepare(`
+    INSERT INTO round_log (room_code, round, player_id, player_name, produced, offer, sold, profit)
+    VALUES (@roomCode, @round, @playerId, @playerName, @produced, @offer, @sold, @profit)
+  `),
+};
 
 // ── DB helpers ────────────────────────────────────────────────────────────────
-async function persistRoom(room) {
+function persistRoom(room) {
   const stateJson = JSON.stringify(roomToJson(room));
-  await pool.execute(
-    `INSERT INTO rooms (code, host_name, phase, round, state_json)
-     VALUES (?, ?, ?, ?, ?)
-     ON DUPLICATE KEY UPDATE
-       host_name  = VALUES(host_name),
-       phase      = VALUES(phase),
-       round      = VALUES(round),
-       state_json = VALUES(state_json)`,
-    [room.code, room.hostName, room.phase, room.round, stateJson]
-  );
+  stmts.upsertRoom.run({ code: room.code, host_name: room.hostName, phase: room.phase, round: room.round, state_json: stateJson });
   for (const [id, p] of Object.entries(room.players)) {
-    await pool.execute(
-      `INSERT INTO room_players (room_code, player_id, name, money)
-       VALUES (?, ?, ?, ?)
-       ON DUPLICATE KEY UPDATE name = VALUES(name), money = VALUES(money)`,
-      [room.code, id, p.name, p.money]
-    );
+    stmts.upsertPlayer.run({ room_code: room.code, player_id: id, name: p.name, money: p.money });
   }
 }
 
-async function dbRemovePlayer(roomCode, playerId) {
-  await pool.execute('DELETE FROM room_players WHERE room_code = ? AND player_id = ?', [roomCode, playerId]);
+function dbRemovePlayer(roomCode, playerId) {
+  stmts.removePlayer.run(roomCode, playerId);
 }
 
-async function dbDeleteRoom(code) {
-  await pool.execute('DELETE FROM rooms WHERE code = ?', [code]);
+function dbDeleteRoom(code) {
+  stmts.deleteRoom.run(code);
 }
 
-async function dbListRooms() {
-  const [rows] = await pool.execute(
-    'SELECT code, host_name, phase FROM rooms ORDER BY created_at DESC LIMIT 50'
-  );
-  return rows;
+function dbListRooms() {
+  return stmts.listRooms.all();
 }
 
-async function dbLogRound({ roomCode, round, playerId, playerName, produced, offer, sold, profit }) {
-  await pool.execute(
-    `INSERT INTO round_log (room_code, round, player_id, player_name, produced, offer, sold, profit)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    [roomCode, round, playerId, playerName, produced, offer, sold, profit]
-  );
+function dbLogRound({ roomCode, round, playerId, playerName, produced, offer, sold, profit }) {
+  stmts.logRound.run({ roomCode, round, playerId, playerName, produced, offer, sold, profit });
 }
 
 // ── Game constants ────────────────────────────────────────────────────────────
@@ -334,7 +322,7 @@ function checkBankruptcy(room) {
 }
 
 // ── Selling logic ─────────────────────────────────────────────────────────────
-async function resolveSelling(room) {
+function resolveSelling(room) {
   const demand = room.rounds[room.round].demand;
   const sellers = activePlayers(room).filter(([, p]) => !p.boikoted && (p.produced + p.carryover) > 0);
   const totalSupply = sellers.reduce((s, [, p]) => s + p.produced + p.carryover, 0);
@@ -349,7 +337,7 @@ async function resolveSelling(room) {
       room.players[id].soldUnits = units;
       room.players[id].money += profit;
       room.players[id].carryover = 0;
-      await dbLogRound({ roomCode: room.code, round: room.round, playerId: id,
+      dbLogRound({ roomCode: room.code, round: room.round, playerId: id,
         playerName: p.name, produced: p.produced, offer: FIXED_SELL_PRICE, sold: units, profit });
     }
     // boikoted players still pay production cost
@@ -386,7 +374,7 @@ async function resolveSelling(room) {
       remaining -= sold;
       const unsold = units - sold;
       room.players[id].carryover = p.unsoldProtected ? unsold : 0;
-      await dbLogRound({ roomCode: room.code, round: room.round, playerId: id,
+      dbLogRound({ roomCode: room.code, round: room.round, playerId: id,
         playerName: p.name, produced: p.produced, offer: p.offer, sold, profit });
     }
 
@@ -593,9 +581,9 @@ function currentActionPlayerId(room) {
 }
 
 // ── REST ──────────────────────────────────────────────────────────────────────
-app.get('/api/rooms', async (req, res) => {
+app.get('/api/rooms', (req, res) => {
   try {
-    const rows = await dbListRooms();
+    const rows = dbListRooms();
     res.json(rows.map(r => ({
       code: r.code,
       hostName: r.host_name,
@@ -609,7 +597,7 @@ app.get('/api/rooms', async (req, res) => {
 io.on('connection', (socket) => {
 
   // ── Create room ──
-  socket.on('create_room', async ({ name }) => {
+  socket.on('create_room', ({ name }) => {
     name = (name || '').trim().slice(0, 20) || 'Host';
     const code = makeRoomCode();
     const room = {
@@ -617,20 +605,18 @@ io.on('connection', (socket) => {
       phase: 'lobby', round: 0,
       rounds: [], deck: [], turnOrder: [], actionTurnIndex: 0,
       activeViolation: null, kppuWindow: false,
-      players: {
-        [socket.id]: makePlayer(name),
-      },
+      players: { [socket.id]: makePlayer(name) },
     };
     rooms[code] = room;
     socketRoom[socket.id] = { roomCode: code, name };
     socket.join(code);
-    await persistRoom(room);
+    persistRoom(room);
     socket.emit('room_created', { code });
     broadcastRoom(room);
   });
 
   // ── Join room ──
-  socket.on('join_room', async ({ name, code }) => {
+  socket.on('join_room', ({ name, code }) => {
     code = (code || '').trim().toUpperCase();
     name = (name || '').trim().slice(0, 20) || 'Player';
     const room = rooms[code];
@@ -641,12 +627,12 @@ io.on('connection', (socket) => {
     room.players[socket.id] = makePlayer(name);
     socketRoom[socket.id] = { roomCode: code, name };
     socket.join(code);
-    await persistRoom(room);
+    persistRoom(room);
     broadcastRoom(room);
   });
 
   // ── Start game ──
-  socket.on('start_game', async () => {
+  socket.on('start_game', () => {
     const sr = socketRoom[socket.id]; if (!sr) return;
     const room = rooms[sr.roomCode];
     if (!room || room.phase !== 'lobby') return;
@@ -655,7 +641,6 @@ io.on('connection', (socket) => {
     room.rounds = generateRounds();
     room.deck = makeDeck();
     const playerIds = Object.keys(room.players);
-    // Turn order = join order; rotate start player each round
     room.turnOrder = [...playerIds];
 
     const { hands } = dealCards(playerIds, room.deck);
@@ -667,7 +652,7 @@ io.on('connection', (socket) => {
     room.round = 0;
     room.phase = 'production';
     resetRoundData(room);
-    await persistRoom(room);
+    persistRoom(room);
     broadcastRoom(room);
   });
 
@@ -684,14 +669,13 @@ io.on('connection', (socket) => {
     broadcastRoom(room);
   });
 
-  socket.on('ready_production', async () => {
+  socket.on('ready_production', () => {
     const sr = socketRoom[socket.id]; if (!sr) return;
     const room = rooms[sr.roomCode];
     if (!room || room.phase !== 'production') return;
     const p = room.players[socket.id];
     if (!p || p.bankrupt) return;
 
-    // Deduct production cost immediately
     const cost = p.produced * (p.productionCostOverride ?? PRODUCTION_COST);
     p.money -= cost;
     p.ready = true;
@@ -701,35 +685,29 @@ io.on('connection', (socket) => {
       checkBankruptcy(room);
       room.phase = 'demand_reveal';
       for (const [, pl] of activePlayers(room)) pl.ready = false;
-      await persistRoom(room);
+      persistRoom(room);
       broadcastRoom(room);
     }
   });
 
-  // ── Demand reveal: host acknowledges → action card phase ──
-  socket.on('reveal_demand', async () => {
+  // ── Demand reveal ──
+  socket.on('reveal_demand', () => {
     const sr = socketRoom[socket.id]; if (!sr) return;
     const room = rooms[sr.roomCode];
     if (!room || room.phase !== 'demand_reveal') return;
 
-    // Players with canAdjustAfterDemand can now change production
-    // We go straight to action card phase
     room.phase = 'action_cards';
-    // Rotate start player by round index
-    const base = room.round % room.turnOrder.length;
-    room.actionTurnIndex = base;
-    await persistRoom(room);
+    room.actionTurnIndex = room.round % room.turnOrder.length;
+    persistRoom(room);
     broadcastRoom(room);
   });
 
   // ── Action cards: play a card ──
-  socket.on('play_card', async ({ cardId, targetId, maxProd }) => {
+  socket.on('play_card', ({ cardId, targetId, maxProd }) => {
     const sr = socketRoom[socket.id]; if (!sr) return;
     const room = rooms[sr.roomCode];
     if (!room || room.phase !== 'action_cards') return;
-    if (currentActionPlayerId(room) !== socket.id) {
-      socket.emit('error', 'Not your turn'); return;
-    }
+    if (currentActionPlayerId(room) !== socket.id) { socket.emit('error', 'Not your turn'); return; }
     const p = room.players[socket.id];
     if (!p) return;
     const card = p.hand.find(c => c.id === cardId);
@@ -737,51 +715,48 @@ io.on('connection', (socket) => {
 
     const VIOLATION_TYPES = ['monopoli', 'oligopoli', 'kartel', 'trust'];
     if (VIOLATION_TYPES.includes(card.type)) {
-      // Open KPPU window: broadcast "violation played", wait briefly for KPPU
       room.kppuWindow = true;
       room.pendingCard = { playerId: socket.id, card, targetId, maxProd };
-      await persistRoom(room);
+      persistRoom(room);
       broadcastRoom(room);
-      // Give 10 seconds for KPPU response; then auto-apply
-      setTimeout(async () => {
+      setTimeout(() => {
         if (room.pendingCard && room.pendingCard.card.id === cardId) {
+          const pendingPlayerId = room.pendingCard.playerId;
           applyPendingCard(room);
-          room.players[room.pendingCard.playerId].playedCard = true;
+          room.players[pendingPlayerId].playedCard = true;
           room.kppuWindow = false;
           room.pendingCard = null;
-          if (allPlayedOrPassed(room)) { await moveToOffering(room); return; }
+          if (allPlayedOrPassed(room)) { moveToOffering(room); return; }
           advanceActionTurn(room);
-          await persistRoom(room);
+          persistRoom(room);
           broadcastRoom(room);
         }
       }, 10000);
     } else {
       applyActionCard(room, socket.id, card, targetId, maxProd);
       p.playedCard = true;
-      if (allPlayedOrPassed(room)) { await moveToOffering(room); return; }
+      if (allPlayedOrPassed(room)) { moveToOffering(room); return; }
       advanceActionTurn(room);
-      await persistRoom(room);
+      persistRoom(room);
       broadcastRoom(room);
     }
   });
 
-  // ── Action cards: pass (don't play a card) ──
-  socket.on('pass_card', async () => {
+  // ── Action cards: pass ──
+  socket.on('pass_card', () => {
     const sr = socketRoom[socket.id]; if (!sr) return;
     const room = rooms[sr.roomCode];
     if (!room || room.phase !== 'action_cards') return;
-    if (currentActionPlayerId(room) !== socket.id) {
-      socket.emit('error', 'Not your turn'); return;
-    }
-    // Passing counts as done for this player
+    if (currentActionPlayerId(room) !== socket.id) { socket.emit('error', 'Not your turn'); return; }
+
     room.players[socket.id].playedCard = true;
-    if (allPlayedOrPassed(room)) { await moveToOffering(room); return; }
+    if (allPlayedOrPassed(room)) { moveToOffering(room); return; }
     advanceActionTurn(room);
     broadcastRoom(room);
   });
 
   // ── KPPU interrupt ──
-  socket.on('play_kppu', async ({ cardId }) => {
+  socket.on('play_kppu', ({ cardId }) => {
     const sr = socketRoom[socket.id]; if (!sr) return;
     const room = rooms[sr.roomCode];
     if (!room || !room.kppuWindow || !room.pendingCard) return;
@@ -790,24 +765,22 @@ io.on('connection', (socket) => {
     const kppuCard = p.hand.find(c => c.id === cardId && c.type === 'kppu');
     if (!kppuCard) { socket.emit('error', 'No KPPU card'); return; }
 
-    // Apply the violation first so KPPU can undo it
     const { playerId, card, targetId, maxProd } = room.pendingCard;
     applyActionCard(room, playerId, card, targetId, maxProd);
     room.players[playerId].playedCard = true;
-    // Now apply KPPU
     applyActionCard(room, socket.id, kppuCard, null, null);
     room.players[socket.id].playedCard = true;
 
     room.kppuWindow = false;
     room.pendingCard = null;
-    if (allPlayedOrPassed(room)) { await moveToOffering(room); return; }
+    if (allPlayedOrPassed(room)) { moveToOffering(room); return; }
     advanceActionTurn(room);
-    await persistRoom(room);
+    persistRoom(room);
     broadcastRoom(room);
   });
 
-  // ── Adjust production after demand (for canAdjustAfterDemand players) ──
-  socket.on('adjust_production', async ({ units }) => {
+  // ── Adjust production after demand ──
+  socket.on('adjust_production', ({ units }) => {
     const sr = socketRoom[socket.id]; if (!sr) return;
     const room = rooms[sr.roomCode];
     if (!room || (room.phase !== 'action_cards' && room.phase !== 'demand_reveal')) return;
@@ -816,13 +789,9 @@ io.on('connection', (socket) => {
     let n = Math.max(0, Math.floor(Number(units) || 0));
     if (p.maxProduction !== null) n = Math.min(n, p.maxProduction);
     const diff = n - p.produced;
-    if (diff > 0) {
-      const extraCost = diff * (p.productionCostOverride ?? PRODUCTION_COST);
-      p.money -= extraCost;
-    } else if (diff < 0) {
-      const refund = Math.abs(diff) * (p.productionCostOverride ?? PRODUCTION_COST);
-      p.money += refund;
-    }
+    const costPerUnit = p.productionCostOverride ?? PRODUCTION_COST;
+    if (diff > 0) p.money -= diff * costPerUnit;
+    else if (diff < 0) p.money += Math.abs(diff) * costPerUnit;
     p.produced = n;
     broadcastRoom(room);
   });
@@ -834,13 +803,12 @@ io.on('connection', (socket) => {
     if (!room || room.phase !== 'offering') return;
     const p = room.players[socket.id];
     if (!p || p.bankrupt || p.boikoted) return;
-    // Kartel card locks offer to 100k
     if (p.offer === FIXED_SELL_PRICE && room.activeViolation?.type === 'kartel') return;
     p.offer = Math.max(0, Math.floor(Number(pricePerUnit) || 0));
     broadcastRoom(room);
   });
 
-  socket.on('ready_offer', async () => {
+  socket.on('ready_offer', () => {
     const sr = socketRoom[socket.id]; if (!sr) return;
     const room = rooms[sr.roomCode];
     if (!room || room.phase !== 'offering') return;
@@ -854,24 +822,22 @@ io.on('connection', (socket) => {
 
     const activeNonBankrupt = activePlayers(room);
     if (activeNonBankrupt.every(([, pl]) => pl.ready || pl.boikoted)) {
-      await resolveSelling(room);
-      // Handle trust: merge revenues
+      resolveSelling(room);
       resolveTrust(room);
       room.phase = 'results';
       for (const [, pl] of activeNonBankrupt) pl.ready = false;
       checkBankruptcy(room);
-      // Check game end
       const stillPlaying = activePlayers(room);
       if (stillPlaying.length <= 1 || room.round + 1 >= ROUND_COUNT) {
         room.phase = 'gameover';
       }
-      await persistRoom(room);
+      persistRoom(room);
       broadcastRoom(room);
     }
   });
 
   // ── Next round ──
-  socket.on('next_round', async () => {
+  socket.on('next_round', () => {
     const sr = socketRoom[socket.id]; if (!sr) return;
     const room = rooms[sr.roomCode];
     if (!room || room.phase !== 'results') return;
@@ -881,20 +847,16 @@ io.on('connection', (socket) => {
     } else {
       room.phase = 'production';
       resetRoundData(room);
-      // Deal 1 new card to each active player from deck
       for (const [id, ] of activePlayers(room)) {
-        if (room.deck.length > 0) {
-          const card = room.deck.pop();
-          room.players[id].hand.push(card);
-        }
+        if (room.deck.length > 0) room.players[id].hand.push(room.deck.pop());
       }
     }
-    await persistRoom(room);
+    persistRoom(room);
     broadcastRoom(room);
   });
 
   // ── Restart ──
-  socket.on('restart', async () => {
+  socket.on('restart', () => {
     const sr = socketRoom[socket.id]; if (!sr) return;
     const room = rooms[sr.roomCode];
     if (!room) return;
@@ -913,7 +875,7 @@ io.on('connection', (socket) => {
       p.carryover = 0;
       resetRoundPerPlayer(p);
     }
-    await persistRoom(room);
+    persistRoom(room);
     broadcastRoom(room);
   });
 
@@ -935,6 +897,7 @@ function makePlayer(name) {
     tiePriority: false,
     boikoted: false,
     maxProduction: null,
+    playedCard: false,
   };
 }
 
@@ -957,44 +920,41 @@ function resolveTrust(room) {
                          partner.soldUnits * (partner.offer || FIXED_SELL_PRICE);
     const half = Math.floor(totalRevenue / 2);
     const remainder = totalRevenue % 2;
-    // Undo individual revenues already counted; redistribute
     room.players[id].money -= p.soldUnits * (p.offer || FIXED_SELL_PRICE);
     room.players[partnerId].money -= partner.soldUnits * (partner.offer || FIXED_SELL_PRICE);
-    room.players[id].money += half + remainder;  // trust initiator gets more if odd
+    room.players[id].money += half + remainder;
     room.players[partnerId].money += half;
     delete room.players[id].trustPartner;
     delete room.players[partnerId].trustPartner;
   }
 }
 
-async function moveToOffering(room) {
+function moveToOffering(room) {
   room.phase = 'offering';
   for (const [, p] of activePlayers(room)) p.ready = false;
-  await persistRoom(room);
+  persistRoom(room);
   broadcastRoom(room);
 }
 
-async function handleLeave(socket) {
+function handleLeave(socket) {
   const sr = socketRoom[socket.id]; if (!sr) return;
   const room = rooms[sr.roomCode];
   delete socketRoom[socket.id];
   if (!room) return;
-  await dbRemovePlayer(room.code, socket.id);
+  dbRemovePlayer(room.code, socket.id);
   delete room.players[socket.id];
   if (Object.keys(room.players).length === 0) {
-    await dbDeleteRoom(room.code);
+    dbDeleteRoom(room.code);
     delete rooms[room.code];
     return;
   }
   if (room.hostName === sr.name) {
     room.hostName = Object.values(room.players)[0].name;
   }
-  await persistRoom(room);
+  persistRoom(room);
   broadcastRoom(room);
 }
 
 // ── Start ─────────────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 3000;
-initDb()
-  .then(() => server.listen(PORT, () => console.log(`Server on http://localhost:${PORT}`)))
-  .catch(err => { console.error('DB connection failed:', err.message); process.exit(1); });
+server.listen(PORT, () => console.log(`Server on http://localhost:${PORT}`));
